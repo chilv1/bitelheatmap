@@ -149,6 +149,30 @@ if uploaded_files and st.button("Generate KMZ"):
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
 
     st.success("KMZ generated successfully!")
+    st.subheader("Map Preview")
+
+import folium
+from streamlit_folium import st_folium
+
+# tạo bản đồ trung tâm tại trung bình toạ độ
+center_lat = (ymin + ymax) / 2
+center_lon = (xmin + xmax) / 2
+
+m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
+
+for op, png in layers.items():
+    folium.raster_layers.ImageOverlay(
+        name=op,
+        image=png,
+        bounds=[[ymin, xmin], [ymax, xmax]],
+        opacity=0.65,
+        interactive=True,
+        cross_origin=False,
+    ).add_to(m)
+
+folium.LayerControl().add_to(m)
+st_folium(m, width=850, height=650)
+
 
     with open(kmz, "rb") as f:
         st.download_button(
