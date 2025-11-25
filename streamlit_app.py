@@ -37,7 +37,7 @@ def make_glow_colormap(hex_color):
     
     colors = [
         (r, g, b, 0.3),  
-        (r2, g2, b2, 0.7)
+        (r2, g2, b2, 0.8)
     ]
 
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
