@@ -14,6 +14,8 @@ import datetime
 import os
 import json
 import requests
+import shutil   # 👈 thêm dòng này
+
 
 
 # -------------------- CONFIG --------------------
