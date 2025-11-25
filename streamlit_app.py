@@ -9,6 +9,7 @@ import zipfile
 import simplekml
 import folium
 from streamlit_folium import st_folium
+import base64
 
 
 # -------------------- CONFIG --------------------
@@ -40,7 +41,6 @@ def make_glow_colormap(hex_color):
     g2 = g + (1.0 - g) * glow_factor
     b2 = b + (1.0 - b) * glow_factor
 
-    # FINAL Version 1 alpha
     colors = [
         (r, g, b, 0.3),  
         (r2, g2, b2, 0.8)
@@ -164,20 +164,25 @@ if uploaded_files and st.button("Generate KMZ"):
             mime="application/vnd.google-earth.kmz"
         )
 
+
     # ============================ MAP PREVIEW ============================
     st.subheader("🗺️ Map Preview (OpenStreetMap)")
 
     center_lat = (ymin + ymax) / 2
     center_lon = (xmin + xmax) / 2
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
 
     for op, png in layers.items():
+        with open(png, 'rb') as f:
+            img_base64 = base64.b64encode(f.read()).decode('utf-8')
+
         folium.raster_layers.ImageOverlay(
             name=op,
-            image=png,
+            image="data:image/png;base64," + img_base64,
             bounds=[[ymin, xmin], [ymax, xmax]],
             opacity=0.65,
+            cross_origin=False
         ).add_to(m)
 
     folium.LayerControl().add_to(m)
