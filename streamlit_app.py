@@ -1,92 +1,106 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import simplekml
-import zipfile
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+from scipy.ndimage import gaussian_filter
 import tempfile
-import os
-import datetime
-import base64
-import requests
-import json
-import shutil
+import zipfile
+import simplekml
 
-
-# ====================
-# CONFIG
-# ====================
+# -------------------- CONFIG --------------------
+GRID_RES = 2000
+RADIUS = 30
+THRESHOLD_RATIO = 0.3
 LAT_COL = "gps_latitude"
 LON_COL = "gps_longitude"
 OPERATOR_COL = "carrier"
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SAVE_DIR = os.path.join(BASE_DIR, "kmz_exported")
-os.makedirs(SAVE_DIR, exist_ok=True)
+OPERATOR_COLORS = {
+    "ENTEL":    "#0057A4",
+    "MOVISTAR": "#00A65A",
+    "CLARO":    "#D40000",
+    "BITEL":    "#FFD500"
+}
 
+# -------------------- COLORMAP GLOW --------------------
+def hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip('#')
+    return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
 
-# ====================
-# CHECK GITHUB SECRETS FIRST
-# ====================
-if "github" not in st.secrets:
-    st.error("🚨 GitHub API SECRET NOT CONFIGURED")
-    st.stop()
+def make_glow_colormap(hex_color):
+    r, g, b = hex_to_rgb(hex_color)
+    glow_factor = 0.6
+    r2 = r + (1.0 - r) * glow_factor
+    g2 = g + (1.0 - g) * glow_factor
+    b2 = b + (1.0 - b) * glow_factor
+    
+    colors = [
+        (r, g, b, 0.3),  
+        (r2, g2, b2, 0.8)
+    ]
 
-GH_TOKEN  = st.secrets["github"]["token"]
-GH_USER   = st.secrets["github"]["user"]
-GH_REPO   = st.secrets["github"]["repo"]
-GH_BRANCH = st.secrets["github"]["branch"]
+    return LinearSegmentedColormap.from_list("glow_cmap", colors)
 
+# -------------------- HEATMAP CORE --------------------
 
-# ====================
-# PUSH TO GITHUB
-# ====================
-def upload_file_to_github(local_file_path, github_repo_path):
-    url = f"https://api.github.com/repos/{GH_USER}/{GH_REPO}/contents/{github_repo_path}"
+def compute_bounds(lon, lat):
+    x1, x2 = lon.min(), lon.max()
+    y1, y2 = lat.min(), lat.max()
+    dx, dy = x2 - x1, y2 - y1
+    return (x1 - dx * 0.02, x2 + dx * 0.02, y1 - dy * 0.02, y2 + dy * 0.02)
 
-    with open(local_file_path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
+def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
+    lon = df_op[LON_COL].to_numpy()
+    lat = df_op[LAT_COL].to_numpy()
 
-    headers = {"Authorization": f"token {GH_TOKEN}"}
+    xn = (lon - xmin) / (xmax - xmin + 1e-9)
+    yn = (lat - ymin) / (ymax - ymin + 1e-9)
+    xi = np.clip((xn * (GRID_RES - 1)).astype(int), 0, GRID_RES - 1)
+    yi = np.clip((yn * (GRID_RES - 1)).astype(int), 0, GRID_RES - 1)
 
-    data = {
-        "message": f"Add KMZ {github_repo_path}",
-        "content": encoded,
-        "branch": GH_BRANCH
-    }
+    grid = np.zeros((GRID_RES, GRID_RES), dtype=float)
+    np.add.at(grid, (yi, xi), 1.0)
 
-    response = requests.put(url, headers=headers, data=json.dumps(data))
+    heat = gaussian_filter(grid, sigma=RADIUS)
+    maxh = np.nanpercentile(heat[heat > 0], 99.5)
 
-    if response.status_code in [200, 201]:
-        st.success("✔ KMZ successfully uploaded to GitHub!")
-    else:
-        st.error(f"❗ GitHub upload ERROR {response.status_code}")
-        st.code(response.text)
+    if np.isnan(maxh) or maxh == 0:
+        maxh = np.max(heat)
 
+    cutoff = maxh * THRESHOLD_RATIO
+    heat[heat < cutoff] = np.nan
 
-# ====================
-# UI
-# ====================
-st.title("KMZ GENERATOR TEST – only upload to GitHub")
+    cmap = make_glow_colormap(color_hex)
 
-uploaded_files = st.file_uploader("Upload CSV files", type=["csv"], accept_multiple_files=True)
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.imshow(
+        heat,
+        origin="lower",
+        extent=[xmin, xmax, ymin, ymax],
+        cmap=cmap,
+        interpolation="bilinear",
+        vmin=cutoff,
+        vmax=maxh
+    )
+    ax.set_axis_off()
 
-if st.button("Generate KMZ + Save to GitHub"):
+    png_file = tempfile.mktemp(suffix=".png")
+    fig.savefig(png_file, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    return png_file
 
-    if not uploaded_files:
-        st.error("❗ Please upload CSV files")
-        st.stop()
-
-    dfs = []
-    for f in uploaded_files:
-        df = pd.read_csv(f)
-        df.columns = df.columns.str.lower().str.strip()
-        dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
-
-    df_all = pd.concat(dfs, ignore_index=True)
-
-    # Create KML
+def create_kmz(layers, xmin, xmax, ymin, ymax):
     kml = simplekml.Kml()
-    kml.newpoint(name="Test", coords=[(0,0)])
+    kml.document.name = "Operators Density Heatmaps"
+
+    for op_name, png in layers.items():
+        g = kml.newgroundoverlay(name=op_name)
+        g.icon.href = png.split("/")[-1]  
+        g.latlonbox.north = ymax
+        g.latlonbox.south = ymin
+        g.latlonbox.east = xmax
+        g.latlonbox.west = xmin
 
     kml_file = tempfile.mktemp(suffix=".kml")
     kml.save(kml_file)
@@ -94,12 +108,52 @@ if st.button("Generate KMZ + Save to GitHub"):
     kmz_file = tempfile.mktemp(suffix=".kmz")
     with zipfile.ZipFile(kmz_file, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(kml_file, "doc.kml")
+        for png in layers.values():
+            z.write(png, png.split("/")[-1])
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    final_kmz = os.path.join(SAVE_DIR, f"heatmap_{timestamp}.kmz")
-    shutil.copy(kmz_file, final_kmz)
+    return kmz_file
 
-    st.success(f"Local KMZ saved: {final_kmz}")
+# ============================= STREAMLIT UI =============================
 
-    github_path = f"kmz_exported/heatmap_{timestamp}.kmz"
-    upload_file_to_github(final_kmz, github_path)
+st.title("📡 Geo Heatmap KMZ Generator")
+
+uploaded_files = st.file_uploader(
+    "Upload one or multiple CSV files",
+    accept_multiple_files=True,
+    type=["csv"]
+)
+
+if uploaded_files and st.button("Generate KMZ"):
+    dfs = []
+    for f in uploaded_files:
+        df = pd.read_csv(f, sep=None, engine="python")
+        df.columns = df.columns.str.lower().str.strip()
+        df[OPERATOR_COL] = df[OPERATOR_COL].astype(str).str.upper().str.strip()
+        dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
+
+    df_all = pd.concat(dfs, ignore_index=True)
+
+    lon = df_all[LON_COL].to_numpy()
+    lat = df_all[LAT_COL].to_numpy()
+
+    xmin, xmax, ymin, ymax = compute_bounds(lon, lat)
+
+    layers = {}
+
+    for op in df_all[OPERATOR_COL].unique():
+        df_op = df_all[df_all[OPERATOR_COL] == op]
+        hex_color = OPERATOR_COLORS.get(op, "#808080")
+        png = build_heatmap_layer(df_op, hex_color, xmin, xmax, ymin, ymax)
+        layers[op] = png
+
+    kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
+
+    st.success("KMZ generated successfully!")
+
+    with open(kmz, "rb") as f:
+        st.download_button(
+            label="⬇️ Download KMZ",
+            data=f,
+            file_name="operators_heatmap_glow.kmz",
+            mime="application/vnd.google-earth.kmz"
+        )
