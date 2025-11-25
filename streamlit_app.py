@@ -26,16 +26,15 @@ OPERATOR_COLORS = {
     "BITEL":    "#FFD500"
 }
 
+# -------------------- GITHUB CONFIG --------------------
 GITHUB_REPO = "chilevan/bitelheatmap"
 GITHUB_BRANCH = "main"
-GITHUB_TOKEN = st.secrets["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"]
+GITHUB_TOKEN = st.secrets["github_token"]  # <-- KEY DUY NHẤT ĐÚNG
 
-# -------------------- GITHUB UPLOAD --------------------
-
+# -------------------- UPLOAD TO GITHUB --------------------
 def upload_kmz_to_github(local_file_path):
     with open(local_file_path, "rb") as f:
         content = f.read()
-
     encoded = base64.b64encode(content).decode()
 
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -64,7 +63,6 @@ def upload_kmz_to_github(local_file_path):
     return None
 
 # -------------------- COLORMAP --------------------
-
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
@@ -77,13 +75,12 @@ def make_glow_colormap(hex_color):
     b2 = b + (1.0 - b) * glow_factor
     
     colors = [
-        (r, g, b, 0.3),
-        (r2, g2, b2, 0.8)
+        (r, g, b, 0.3),    
+        (r2, g2, b2, 0.8)  
     ]
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
 
-# -------------------- HEATMAP CORE --------------------
-
+# -------------------- HEATMAP GENERATION --------------------
 def compute_bounds(lon, lat):
     x1, x2 = lon.min(), lon.max()
     y1, y2 = lat.min(), lat.max()
@@ -143,8 +140,8 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
 
     kml_file = tempfile.mktemp(suffix=".kml")
     kml.save(kml_file)
-
     kmz_file = tempfile.mktemp(suffix=".kmz")
+
     with zipfile.ZipFile(kmz_file, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(kml_file, "doc.kml")
         for png in layers.values():
@@ -152,9 +149,8 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
 
     return kmz_file
 
-# ============================= STREAMLIT UI =============================
-
-st.title("📡 Geo Heatmap KMZ Generator")
+# -------------------- STREAMLIT UI --------------------
+st.title("📡 Geo Heatmap KMZ Generator + GitHub Archiver")
 
 uploaded_files = st.file_uploader(
     "Upload CSV(s)",
@@ -162,7 +158,7 @@ uploaded_files = st.file_uploader(
     type=["csv"]
 )
 
-if uploaded_files and st.button("Generate KMZ + Upload to GitHub"):
+if uploaded_files and st.button("Generate & Upload"):
     dfs = []
     for f in uploaded_files:
         df = pd.read_csv(f, sep=None, engine="python")
@@ -171,14 +167,12 @@ if uploaded_files and st.button("Generate KMZ + Upload to GitHub"):
         dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
 
     df_all = pd.concat(dfs, ignore_index=True)
-
     lon = df_all[LON_COL].to_numpy()
     lat = df_all[LAT_COL].to_numpy()
 
     xmin, xmax, ymin, ymax = compute_bounds(lon, lat)
 
     layers = {}
-
     for op in df_all[OPERATOR_COL].unique():
         df_op = df_all[df_all[OPERATOR_COL] == op]
         hex_color = OPERATOR_COLORS.get(op, "#808080")
@@ -186,23 +180,21 @@ if uploaded_files and st.button("Generate KMZ + Upload to GitHub"):
         layers[op] = png
 
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
-
-    st.success("KMZ generated locally")
+    st.success("✔ KMZ created")
 
     with open(kmz, "rb") as f:
         st.download_button(
-            label="⬇️ Local Download KMZ",
-            data=f,
-            file_name="operators_heatmap_glow.kmz",
-            mime="application/vnd.google-earth.kmz"
+            "⬇️ Download KMZ",
+            f,
+            "operators_heatmap.kmz"
         )
 
-    st.info("Uploading to GitHub…")
+    st.info("⌛ Uploading to GitHub…")
 
     github_link = upload_kmz_to_github(kmz)
 
     if github_link:
-        st.success("✔ KMZ uploaded to GitHub")
-        st.markdown(f"🔗 GitHub File: {github_link}")
+        st.success("✔ Uploaded to GitHub")
+        st.markdown(f"📎 KMZ link: {github_link}")
     else:
-        st.error("Upload failed")
+        st.error("❗ GitHub upload failed")
