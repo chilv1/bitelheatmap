@@ -119,17 +119,24 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
     return kmz_file
 
 
-# ============================= STREAMLIT UI =============================
+# ============================= STREAMLIT APP =============================
 st.title("📡 Geo Heatmap KMZ Generator + Map Preview")
 
 
+# 1️⃣ PHẦN 1: EXPORT KMZ
+st.header("1️⃣ Generate KMZ")
+
 uploaded_files = st.file_uploader(
-    "Upload one or multiple CSV files",
+    "Upload CSV files",
     accept_multiple_files=True,
-    type=["csv"]
+    type=["csv"],
+    key="upload_csv"
 )
 
-if uploaded_files and st.button("Generate KMZ"):
+if st.button("Generate KMZ"):
+    st.session_state["files"] = uploaded_files  
+    st.session_state["kmz_ready"] = False  
+
     dfs = []
     for f in uploaded_files:
         df = pd.read_csv(f, sep=None, engine="python")
@@ -154,36 +161,46 @@ if uploaded_files and st.button("Generate KMZ"):
 
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
 
-    st.success("KMZ generated successfully! 🎉")
+    st.session_state["layers"] = layers
+    st.session_state["bounds"] = (xmin, xmax, ymin, ymax)
+    st.session_state["kmz_ready"] = True
 
     with open(kmz, "rb") as f:
         st.download_button(
             label="⬇️ Download KMZ",
             data=f,
-            file_name="operators_heatmap_glow.kmz",
-            mime="application/vnd.google-earth.kmz"
+            file_name="operators_heatmap_glow.kmz"
         )
 
+    st.success("KMZ Export Completed ✅")
 
-    # ============================ MAP PREVIEW ============================
-    st.subheader("🗺️ Map Preview (OpenStreetMap)")
 
-    center_lat = (ymin + ymax) / 2
-    center_lon = (xmin + xmax) / 2
+# 2️⃣ PHẦN 2: MAP PREVIEW
+st.header("2️⃣ Preview Map")
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
+if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
+    if st.button("Show Map Preview"):
 
-    for op, png in layers.items():
-        with open(png, 'rb') as f:
-            img_base64 = base64.b64encode(f.read()).decode('utf-8')
+        layers = st.session_state["layers"]
+        xmin, xmax, ymin, ymax = st.session_state["bounds"]
 
-        folium.raster_layers.ImageOverlay(
-            name=op,
-            image="data:image/png;base64," + img_base64,
-            bounds=[[ymin, xmin], [ymax, xmax]],
-            opacity=0.65,
-            cross_origin=False
-        ).add_to(m)
+        center_lat = (ymin + ymax) / 2
+        center_lon = (xmin + xmax) / 2
 
-    folium.LayerControl().add_to(m)
-    st_folium(m, width=900, height=650)
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
+
+        for op, png in layers.items():
+            with open(png, 'rb') as f:
+                img_base64 = base64.b64encode(f.read()).decode('utf-8')
+
+            folium.raster_layers.ImageOverlay(
+                name=op,
+                image="data:image/png;base64," + img_base64,
+                bounds=[[ymin, xmin], [ymax, xmax]],
+                opacity=0.65,
+            ).add_to(m)
+
+        folium.LayerControl().add_to(m)
+        st_folium(m, width=900, height=650)
+else:
+    st.info("👉 Generate KMZ first.")
