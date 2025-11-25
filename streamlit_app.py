@@ -180,10 +180,10 @@ st.header("2️⃣ Preview Map")
 
 if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
 
-    if st.button("Show Map Preview"):
-        st.session_state["show_map"] = True
+    if st.button("Toggle Map Visibility"):
+        st.session_state["show_map"] = not st.session_state.get("show_map", False)
 
-    if "show_map" in st.session_state and st.session_state["show_map"]:
+    if st.session_state.get("show_map", False):
 
         layers = st.session_state["layers"]
         xmin, xmax, ymin, ymax = st.session_state["bounds"]
@@ -191,10 +191,11 @@ if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
         center_lat = (ymin + ymax) / 2
         center_lon = (xmin + xmax) / 2
 
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
 
         # ==================== Improved Layer Control ====================
         for op, png in layers.items():
+
             layer_group = folium.FeatureGroup(name=op, overlay=True, control=True)
             layer_group.add_to(m)
 
@@ -209,6 +210,7 @@ if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
             ).add_to(layer_group)
 
         folium.LayerControl(collapsed=False).add_to(m)
-        st_folium(m, width=900, height=650)
+
+        st_folium(m, use_container_width=True, returned_objects=[])
 else:
     st.info("👉 Generate KMZ first.")
