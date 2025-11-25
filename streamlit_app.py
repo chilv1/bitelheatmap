@@ -28,7 +28,7 @@ OPERATOR_COLORS = {
 
 GITHUB_REPO = "chilevan/bitelheatmap"
 GITHUB_BRANCH = "main"
-GITHUB_TOKEN = st.secrets["github_token"]
+GITHUB_TOKEN = st.secrets["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"]
 
 # -------------------- GITHUB UPLOAD --------------------
 
