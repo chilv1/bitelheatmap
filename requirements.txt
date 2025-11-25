@@ -6,3 +6,4 @@ scipy
 simplekml
 folium
 streamlit-folium
+python-dateutil
