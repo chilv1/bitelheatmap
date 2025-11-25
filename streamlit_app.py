@@ -10,6 +10,53 @@ import simplekml
 import folium
 from streamlit_folium import st_folium
 import base64
+import datetime
+import os
+import shutil
+import subprocess
+
+
+# -------------------- PERMANENT STORAGE --------------------
+SAVE_DIR = "kmz_exported"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+
+# -------------------- GIT PUSH --------------------
+def git_save(file):
+    subprocess.run(["git", "config", "--global", "user.email", "streamlit.bot@bot"])
+    subprocess.run(["git", "config", "--global", "user.name", "Streamlit Bot"])
+    subprocess.run(["git", "add", file])
+    subprocess.run(["git", "commit", "-m", f"Add KMZ file {file}"])
+    subprocess.run(["git", "push"])
+
+
+def save_kmz_persistently(kmz_path):
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_path = f"{SAVE_DIR}/heatmap_{timestamp}.kmz"
+    shutil.copy(kmz_path, new_path)
+    git_save(new_path)
+    return new_path
+
+
+def list_saved_kmz_files():
+    files = []
+    for f in os.listdir(SAVE_DIR):
+        if f.endswith(".kmz"):
+            files.append(f"{SAVE_DIR}/{f}")
+    return sorted(files)
+
+
+def load_kmz_layers(kmz_file):
+    tmp_dir = tempfile.mkdtemp()
+    with zipfile.ZipFile(kmz_file, 'r') as zip_ref:
+        zip_ref.extractall(tmp_dir)
+
+    overlays = {}
+    for f in os.listdir(tmp_dir):
+        if f.endswith(".png"):
+            overlays[f.replace(".png", "")] = os.path.join(tmp_dir, f)
+
+    return overlays
 
 
 # -------------------- CONFIG --------------------
@@ -28,7 +75,7 @@ OPERATOR_COLORS = {
 }
 
 
-# -------------------- COLORMAP GLOW --------------------
+# -------------------- COLORMAP --------------------
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
@@ -49,94 +96,22 @@ def make_glow_colormap(hex_color):
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
 
 
-# -------------------- PROCESSING --------------------
-def compute_bounds(lon, lat):
-    x1, x2 = lon.min(), lon.max()
-    y1, y2 = lat.min(), lat.max()
-    dx, dy = x2 - x1, y2 - y1
-    return (x1 - dx * 0.02, x2 + dx * 0.02, y1 - dy * 0.02, y2 + dy * 0.02)
+# -------------------- APP UI --------------------
+st.title("📡 Geo Heatmap KMZ Management & Visualization")
 
 
-def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
-    lon = df_op[LON_COL].to_numpy()
-    lat = df_op[LAT_COL].to_numpy()
-    xn = (lon - xmin) / (xmax - xmin + 1e-9)
-    yn = (lat - ymin) / (ymax - ymin + 1e-9)
-    xi = np.clip((xn * (GRID_RES - 1)).astype(int), 0, GRID_RES - 1)
-    yi = np.clip((yn * (GRID_RES - 1)).astype(int), 0, GRID_RES - 1)
-
-    grid = np.zeros((GRID_RES, GRID_RES), dtype=float)
-    np.add.at(grid, (yi, xi), 1.0)
-
-    heat = gaussian_filter(grid, sigma=RADIUS)
-    maxh = np.nanpercentile(heat[heat > 0], 99.5)
-    if np.isnan(maxh) or maxh == 0:
-        maxh = np.max(heat)
-    cutoff = maxh * THRESHOLD_RATIO
-    heat[heat < cutoff] = np.nan
-
-    cmap = make_glow_colormap(color_hex)
-
-    fig, ax = plt.subplots(figsize=(10, 10))
-    ax.imshow(
-        heat,
-        origin="lower",
-        extent=[xmin, xmax, ymin, ymax],
-        cmap=cmap,
-        interpolation="bilinear",
-        vmin=cutoff,
-        vmax=maxh
-    )
-    ax.set_axis_off()
-
-    png_file = tempfile.mktemp(suffix=".png")
-    fig.savefig(png_file, dpi=300, transparent=True, bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
-    return png_file
-
-
-def create_kmz(layers, xmin, xmax, ymin, ymax):
-    kml = simplekml.Kml()
-    kml.document.name = "Operators Density Heatmaps"
-
-    for op_name, png in layers.items():
-        g = kml.newgroundoverlay(name=op_name)
-        g.icon.href = png.split("/")[-1]
-        g.latlonbox.north = ymax
-        g.latlonbox.south = ymin
-        g.latlonbox.east = xmax
-        g.latlonbox.west = xmin
-
-    kml_file = tempfile.mktemp(suffix=".kml")
-    kml.save(kml_file)
-
-    kmz_file = tempfile.mktemp(suffix=".kmz")
-    with zipfile.ZipFile(kmz_file, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(kml_file, "doc.kml")
-        for png in layers.values():
-            z.write(png, png.split("/")[-1])
-
-    return kmz_file
-
-
-# ============================= STREAMLIT APP =============================
-st.title("📡 Geo Heatmap KMZ Generator + Map Preview (Layer Control)")
-
-
-# 1️⃣ PHẦN 1: EXPORT KMZ
-st.header("1️⃣ Generate KMZ")
+# =============================================================
+# 1) Generate KMZ from CSV
+# =============================================================
+st.header("📍 1) Generate new KMZ From CSV")
 
 uploaded_files = st.file_uploader(
-    "Upload CSV files",
+    "Upload CSV",
     accept_multiple_files=True,
     type=["csv"],
-    key="upload_csv"
 )
 
-if st.button("Generate KMZ"):
-    st.session_state["files"] = uploaded_files  
-    st.session_state["kmz_ready"] = False  
-
+if st.button("Generate & Save KMZ Permanently"):
     dfs = []
     for f in uploaded_files:
         df = pd.read_csv(f, sep=None, engine="python")
@@ -149,68 +124,89 @@ if st.button("Generate KMZ"):
     lon = df_all[LON_COL].to_numpy()
     lat = df_all[LAT_COL].to_numpy()
 
-    xmin, xmax, ymin, ymax = compute_bounds(lon, lat)
+    xmin, xmax, ymin, ymax = lon.min(), lon.max(), lat.min(), lat.max()
 
+    # build layers
     layers = {}
 
     for op in df_all[OPERATOR_COL].unique():
         df_op = df_all[df_all[OPERATOR_COL] == op]
-        hex_color = OPERATOR_COLORS.get(op, "#808080")
-        png = build_heatmap_layer(df_op, hex_color, xmin, xmax, ymin, ymax)
-        layers[op] = png
 
-    kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
+        color = OPERATOR_COLORS.get(op, "#999999")
+        heat = gaussian_filter(np.histogram2d(
+            df_op[ LAT_COL ],
+            df_op[ LON_COL ],
+            bins=GRID_RES)[0], sigma=RADIUS)
 
-    st.session_state["layers"] = layers
-    st.session_state["bounds"] = (xmin, xmax, ymin, ymax)
-    st.session_state["kmz_ready"] = True
+        fig, ax = plt.subplots(figsize=(10,10))
+        ax.imshow(heat, cmap="hot", interpolation="bilinear")
+        ax.set_axis_off()
 
-    with open(kmz, "rb") as f:
-        st.download_button(
-            label="⬇️ Download KMZ",
-            data=f,
-            file_name="operators_heatmap_glow.kmz"
-        )
+        png_path = tempfile.mktemp(suffix=".png")
+        fig.savefig(png_path, dpi=300, transparent=True)
+        plt.close(fig)
 
-    st.success("KMZ Export Completed ✅")
+        layers[op] = png_path
+
+    # generate kmz
+    kml = simplekml.Kml()
+    for op, png in layers.items():
+        g = kml.newgroundoverlay(name=op)
+        g.icon.href = png.split("/")[-1]
+
+    kml_path = tempfile.mktemp(suffix=".kml")
+    kml.save(kml_path)
+
+    kmz_file = tempfile.mktemp(suffix=".kmz")
+    with zipfile.ZipFile(kmz_file, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(kml_path, "doc.kml")
+        for png in layers.values():
+            z.write(png, os.path.basename(png))
+
+    # SAVE PERMANENT
+    final_path = save_kmz_persistently(kmz_file)
+
+    st.success(f"KMZ saved permanently: {final_path}")
+    st.success("File also pushed to GitHub")
 
 
-# 2️⃣ PHẦN 2: MAP PREVIEW
-st.header("2️⃣ Preview Map")
+# =============================================================
+# 2) KMZ HISTORY PAGE
+# =============================================================
+st.header("🕘 2) Heatmap History Archive")
 
-if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
+kmz_files = list_saved_kmz_files()
 
-    if st.button("Toggle Map Visibility"):
-        st.session_state["show_map"] = not st.session_state.get("show_map", False)
+if not kmz_files:
+    st.warning("❗No saved KMZ yet")
+else:
+    selected_kmz = st.selectbox("Select KMZ to preview:", kmz_files)
 
-    if st.session_state.get("show_map", False):
+    public_url = f"https://raw.githubusercontent.com/chilv1/Bitelkmz/main/{selected_kmz}"
 
-        layers = st.session_state["layers"]
-        xmin, xmax, ymin, ymax = st.session_state["bounds"]
+    st.write("🔗 Public link:")
+    st.code(public_url)
 
-        center_lat = (ymin + ymax) / 2
-        center_lon = (xmin + xmax) / 2
+    st.download_button("⬇️ Download KMZ", open(selected_kmz, "rb"), file_name=os.path.basename(selected_kmz))
 
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
+    if st.button("Preview this KMZ"):
+        layers = load_kmz_layers(selected_kmz)
 
-        # ==================== Improved Layer Control ====================
+        m = folium.Map(location=[-12, -77], zoom_start=12)
+
         for op, png in layers.items():
+            group = folium.FeatureGroup(name=op, overlay=True)
+            group.add_to(m)
 
-            layer_group = folium.FeatureGroup(name=op, overlay=True, control=True)
-            layer_group.add_to(m)
-
-            with open(png, 'rb') as f:
-                img_base64 = base64.b64encode(f.read()).decode('utf-8')
+            with open(png, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
 
             folium.raster_layers.ImageOverlay(
-                name=op,
-                image="data:image/png;base64," + img_base64,
-                bounds=[[ymin, xmin], [ymax, xmax]],
+                image="data:image/png;base64," + img_b64,
+                bounds=[[-90,-180],[90,180]],
                 opacity=0.65,
-            ).add_to(layer_group)
+            ).add_to(group)
 
-        folium.LayerControl(collapsed=False).add_to(m)
+        folium.LayerControl().add_to(m)
 
-        st_folium(m, use_container_width=True, returned_objects=[])
-else:
-    st.info("👉 Generate KMZ first.")
+        st_folium(m, use_container_width=True)
