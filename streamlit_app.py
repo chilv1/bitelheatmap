@@ -137,12 +137,61 @@ if st.button("Generate KMZ"):
     st.session_state["files"] = uploaded_files  
     st.session_state["kmz_ready"] = False  
 
-    dfs = []
+    # Helper function to robustly parse CSV files with unknown delimiters
+    def _read_csv_auto(file_obj: "st.runtime.uploaded_file_manager.UploadedFile") -> pd.DataFrame:
+        """
+        Try to read a CSV with automatic delimiter detection. If only one column is
+        returned or a parsing error occurs, fall back to using a semicolon as the delimiter.
+
+        Parameters
+        ----------
+        file_obj : UploadedFile
+            The uploaded file object returned by Streamlit's file_uploader.
+
+        Returns
+        -------
+        DataFrame
+            A pandas DataFrame containing the parsed data.
+        """
+        # Move the pointer to the beginning in case it has been read elsewhere
+        file_obj.seek(0)
+        try:
+            df_tmp = pd.read_csv(file_obj, sep=None, engine="python")
+        except Exception:
+            # If pandas fails to guess the delimiter, try a semicolon
+            file_obj.seek(0)
+            df_tmp = pd.read_csv(file_obj, sep=";")
+        else:
+            # If pandas only created a single column containing all headers separated by semicolons,
+            # then automatically retry with semicolon delimiter
+            if len(df_tmp.columns) == 1 and ";" in df_tmp.columns[0]:
+                file_obj.seek(0)
+                df_tmp = pd.read_csv(file_obj, sep=";")
+        return df_tmp
+
+    dfs: list[pd.DataFrame] = []
     for f in uploaded_files:
-        df = pd.read_csv(f, sep=None, engine="python")
-        df.columns = df.columns.str.lower().str.strip()
+        # Parse the file with robust delimiter handling
+        df = _read_csv_auto(f)
+
+        # Normalize column names to lowercase for easier matching
+        df.columns = df.columns.str.lower().str.strip().str.replace('"', '')
+
+        # Ensure operator column exists before processing
+        if OPERATOR_COL not in df.columns:
+            st.warning(f"Column '{OPERATOR_COL}' not found in uploaded file {getattr(f, 'name', 'unknown')}.")
+            continue
+
+        # Uppercase the operator names to ensure consistent matching with our color dictionary
         df[OPERATOR_COL] = df[OPERATOR_COL].astype(str).str.upper().str.strip()
-        dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
+
+        # Append only the columns of interest, dropping any rows with missing values
+        try:
+            dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
+        except KeyError:
+            st.warning(
+                f"Required columns '{LAT_COL}', '{LON_COL}', or '{OPERATOR_COL}' are missing in file {getattr(f, 'name', 'unknown')}.")
+            continue
 
     df_all = pd.concat(dfs, ignore_index=True)
 
@@ -179,16 +228,25 @@ if st.button("Generate KMZ"):
 st.header("2️⃣ Preview Map")
 
 if "kmz_ready" in st.session_state and st.session_state["kmz_ready"]:
-    if st.button("Show Map Preview"):
+    # Initialize a flag in session state to control map visibility
+    show_map_key = "show_map_preview"
+    if show_map_key not in st.session_state:
+        st.session_state[show_map_key] = False
 
+    # Tapping the button toggles the visibility of the map
+    if st.button("Show Map Preview"):
+        st.session_state[show_map_key] = not st.session_state[show_map_key]
+
+    # Only render the map if the toggle is active
+    if st.session_state[show_map_key]:
         layers = st.session_state["layers"]
         xmin, xmax, ymin, ymax = st.session_state["bounds"]
 
         center_lat = (ymin + ymax) / 2
         center_lon = (xmin + xmax) / 2
 
+        # Build the folium map and overlay each operator's heatmap
         m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
-
         for op, png in layers.items():
             with open(png, 'rb') as f:
                 img_base64 = base64.b64encode(f.read()).decode('utf-8')
