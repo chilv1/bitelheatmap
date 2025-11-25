@@ -36,8 +36,8 @@ def make_glow_colormap(hex_color):
     b2 = b + (1.0 - b) * glow_factor
     
     colors = [
-        (r, g, b, 0.18),  
-        (r2, g2, b2, 0.55)
+        (r, g, b, 0.3),  
+        (r2, g2, b2, 0.7)
     ]
 
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
