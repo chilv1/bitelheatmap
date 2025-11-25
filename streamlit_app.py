@@ -7,6 +7,9 @@ from scipy.ndimage import gaussian_filter
 import tempfile
 import zipfile
 import simplekml
+import folium
+from streamlit_folium import st_folium
+
 
 # -------------------- CONFIG --------------------
 GRID_RES = 2000
@@ -23,10 +26,12 @@ OPERATOR_COLORS = {
     "BITEL":    "#FFD500"
 }
 
+
 # -------------------- COLORMAP GLOW --------------------
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+
 
 def make_glow_colormap(hex_color):
     r, g, b = hex_to_rgb(hex_color)
@@ -34,7 +39,8 @@ def make_glow_colormap(hex_color):
     r2 = r + (1.0 - r) * glow_factor
     g2 = g + (1.0 - g) * glow_factor
     b2 = b + (1.0 - b) * glow_factor
-    
+
+    # FINAL Version 1 alpha
     colors = [
         (r, g, b, 0.3),  
         (r2, g2, b2, 0.8)
@@ -42,18 +48,18 @@ def make_glow_colormap(hex_color):
 
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
 
-# -------------------- HEATMAP CORE --------------------
 
+# -------------------- PROCESSING --------------------
 def compute_bounds(lon, lat):
     x1, x2 = lon.min(), lon.max()
     y1, y2 = lat.min(), lat.max()
     dx, dy = x2 - x1, y2 - y1
     return (x1 - dx * 0.02, x2 + dx * 0.02, y1 - dy * 0.02, y2 + dy * 0.02)
 
+
 def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
     lon = df_op[LON_COL].to_numpy()
     lat = df_op[LAT_COL].to_numpy()
-
     xn = (lon - xmin) / (xmax - xmin + 1e-9)
     yn = (lat - ymin) / (ymax - ymin + 1e-9)
     xi = np.clip((xn * (GRID_RES - 1)).astype(int), 0, GRID_RES - 1)
@@ -64,10 +70,8 @@ def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
 
     heat = gaussian_filter(grid, sigma=RADIUS)
     maxh = np.nanpercentile(heat[heat > 0], 99.5)
-
     if np.isnan(maxh) or maxh == 0:
         maxh = np.max(heat)
-
     cutoff = maxh * THRESHOLD_RATIO
     heat[heat < cutoff] = np.nan
 
@@ -90,13 +94,14 @@ def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
     plt.close(fig)
     return png_file
 
+
 def create_kmz(layers, xmin, xmax, ymin, ymax):
     kml = simplekml.Kml()
     kml.document.name = "Operators Density Heatmaps"
 
     for op_name, png in layers.items():
         g = kml.newgroundoverlay(name=op_name)
-        g.icon.href = png.split("/")[-1]  
+        g.icon.href = png.split("/")[-1]
         g.latlonbox.north = ymax
         g.latlonbox.south = ymin
         g.latlonbox.east = xmax
@@ -113,9 +118,10 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
 
     return kmz_file
 
-# ============================= STREAMLIT UI =============================
 
-st.title("📡 Geo Heatmap KMZ Generator")
+# ============================= STREAMLIT UI =============================
+st.title("📡 Geo Heatmap KMZ Generator + Map Preview")
+
 
 uploaded_files = st.file_uploader(
     "Upload one or multiple CSV files",
@@ -148,31 +154,7 @@ if uploaded_files and st.button("Generate KMZ"):
 
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
 
-    st.success("KMZ generated successfully!")
-    st.subheader("Map Preview")
-
-import folium
-from streamlit_folium import st_folium
-
-# tạo bản đồ trung tâm tại trung bình toạ độ
-center_lat = (ymin + ymax) / 2
-center_lon = (xmin + xmax) / 2
-
-m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
-
-for op, png in layers.items():
-    folium.raster_layers.ImageOverlay(
-        name=op,
-        image=png,
-        bounds=[[ymin, xmin], [ymax, xmax]],
-        opacity=0.65,
-        interactive=True,
-        cross_origin=False,
-    ).add_to(m)
-
-folium.LayerControl().add_to(m)
-st_folium(m, width=850, height=650)
-
+    st.success("KMZ generated successfully! 🎉")
 
     with open(kmz, "rb") as f:
         st.download_button(
@@ -181,3 +163,22 @@ st_folium(m, width=850, height=650)
             file_name="operators_heatmap_glow.kmz",
             mime="application/vnd.google-earth.kmz"
         )
+
+    # ============================ MAP PREVIEW ============================
+    st.subheader("🗺️ Map Preview (OpenStreetMap)")
+
+    center_lat = (ymin + ymax) / 2
+    center_lon = (xmin + xmax) / 2
+
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
+
+    for op, png in layers.items():
+        folium.raster_layers.ImageOverlay(
+            name=op,
+            image=png,
+            bounds=[[ymin, xmin], [ymax, xmax]],
+            opacity=0.65,
+        ).add_to(m)
+
+    folium.LayerControl().add_to(m)
+    st_folium(m, width=900, height=650)
