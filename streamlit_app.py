@@ -7,6 +7,9 @@ from scipy.ndimage import gaussian_filter
 import tempfile
 import zipfile
 import simplekml
+import base64
+import requests
+from datetime import datetime
 
 # -------------------- CONFIG --------------------
 GRID_RES = 2000
@@ -23,7 +26,45 @@ OPERATOR_COLORS = {
     "BITEL":    "#FFD500"
 }
 
-# -------------------- COLORMAP GLOW --------------------
+GITHUB_REPO = "chilevan/bitelheatmap"
+GITHUB_BRANCH = "main"
+GITHUB_TOKEN = st.secrets["github_token"]
+
+# -------------------- GITHUB UPLOAD --------------------
+
+def upload_kmz_to_github(local_file_path):
+    with open(local_file_path, "rb") as f:
+        content = f.read()
+
+    encoded = base64.b64encode(content).decode()
+
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"heatmap_{timestamp}.kmz"
+    remote_path = f"kmz_exported/{filename}"
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{remote_path}"
+
+    data = {
+        "message": f"Upload KMZ {filename}",
+        "content": encoded,
+        "branch": GITHUB_BRANCH
+    }
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    r = requests.put(url, json=data, headers=headers)
+
+    if r.status_code in [200, 201]:
+        j = r.json()
+        return j["content"]["html_url"]
+
+    st.error(f"GitHub upload failed: {r.text}")
+    return None
+
+# -------------------- COLORMAP --------------------
+
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
@@ -36,10 +77,9 @@ def make_glow_colormap(hex_color):
     b2 = b + (1.0 - b) * glow_factor
     
     colors = [
-        (r, g, b, 0.3),  
+        (r, g, b, 0.3),
         (r2, g2, b2, 0.8)
     ]
-
     return LinearSegmentedColormap.from_list("glow_cmap", colors)
 
 # -------------------- HEATMAP CORE --------------------
@@ -64,7 +104,6 @@ def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
 
     heat = gaussian_filter(grid, sigma=RADIUS)
     maxh = np.nanpercentile(heat[heat > 0], 99.5)
-
     if np.isnan(maxh) or maxh == 0:
         maxh = np.max(heat)
 
@@ -96,7 +135,7 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
 
     for op_name, png in layers.items():
         g = kml.newgroundoverlay(name=op_name)
-        g.icon.href = png.split("/")[-1]  
+        g.icon.href = png.split("/")[-1]
         g.latlonbox.north = ymax
         g.latlonbox.south = ymin
         g.latlonbox.east = xmax
@@ -118,12 +157,12 @@ def create_kmz(layers, xmin, xmax, ymin, ymax):
 st.title("📡 Geo Heatmap KMZ Generator")
 
 uploaded_files = st.file_uploader(
-    "Upload one or multiple CSV files",
+    "Upload CSV(s)",
     accept_multiple_files=True,
     type=["csv"]
 )
 
-if uploaded_files and st.button("Generate KMZ"):
+if uploaded_files and st.button("Generate KMZ + Upload to GitHub"):
     dfs = []
     for f in uploaded_files:
         df = pd.read_csv(f, sep=None, engine="python")
@@ -148,12 +187,22 @@ if uploaded_files and st.button("Generate KMZ"):
 
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
 
-    st.success("KMZ generated successfully!")
+    st.success("KMZ generated locally")
 
     with open(kmz, "rb") as f:
         st.download_button(
-            label="⬇️ Download KMZ",
+            label="⬇️ Local Download KMZ",
             data=f,
             file_name="operators_heatmap_glow.kmz",
             mime="application/vnd.google-earth.kmz"
         )
+
+    st.info("Uploading to GitHub…")
+
+    github_link = upload_kmz_to_github(kmz)
+
+    if github_link:
+        st.success("✔ KMZ uploaded to GitHub")
+        st.markdown(f"🔗 GitHub File: {github_link}")
+    else:
+        st.error("Upload failed")
