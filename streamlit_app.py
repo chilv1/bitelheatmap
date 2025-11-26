@@ -53,9 +53,6 @@ def upload_kmz_to_github(local_file_path):
 GRID_RES = 2000
 RADIUS = 30
 THRESHOLD_RATIO = 0.3
-LAT_COL = "gps_latitude"
-LON_COL = "gps_longitude"
-OPERATOR_COL = "carrier"
 
 OPERATOR_COLORS = {
     "ENTEL":    "#0057A4",
@@ -64,7 +61,8 @@ OPERATOR_COLORS = {
     "BITEL":    "#FFD500"
 }
 
-# ================== COLOR UTIL ==================
+
+# ================== COLOR MAP ==================
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     return tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
@@ -84,11 +82,12 @@ def compute_bounds(lon, lat):
 
 
 def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
-    lon = df_op[LON_COL].to_numpy()
-    lat = df_op[LAT_COL].to_numpy()
+    lon = df_op["gps_longitude"].to_numpy()
+    lat = df_op["gps_latitude"].to_numpy()
 
     xn = (lon - xmin) / (xmax - xmin + 1e-9)
     yn = (lat - ymin) / (ymax - ymin + 1e-9)
+
     xi = np.clip((xn * 1999).astype(int), 0, 1999)
     yi = np.clip((yn * 1999).astype(int), 0, 1999)
 
@@ -96,9 +95,7 @@ def build_heatmap_layer(df_op, color_hex, xmin, xmax, ymin, ymax):
     np.add.at(grid, (yi, xi), 1)
 
     heat = gaussian_filter(grid, sigma=RADIUS)
-
-    maxh = np.max(heat)
-    cutoff = maxh * THRESHOLD_RATIO
+    cutoff = np.max(heat) * THRESHOLD_RATIO
     heat[heat < cutoff] = np.nan
 
     fig, ax = plt.subplots(figsize=(10, 10))
@@ -141,21 +138,21 @@ files = st.file_uploader("Upload CSV(s)", accept_multiple_files=True)
 if files and st.button("Generate"):
     dfs = []
     for f in files:
-        df = pd.read_csv(f)
+        df = pd.read_csv(f, sep=";")
         df.columns = df.columns.str.lower().str.strip()
-        df[OPERATOR_COL] = df[OPERATOR_COL].astype(str).str.upper()
-        dfs.append(df[[LAT_COL, LON_COL, OPERATOR_COL]].dropna())
+        dfs.append(df[["gps_latitude","gps_longitude","carrier"]].dropna())
 
     df_all = pd.concat(dfs)
+    df_all["carrier"] = df_all["carrier"].str.replace('"','').str.upper()
 
-    lon = df_all[LON_COL].to_numpy()
-    lat = df_all[LAT_COL].to_numpy()
+    lon = df_all["gps_longitude"].to_numpy()
+    lat = df_all["gps_latitude"].to_numpy()
 
     xmin, xmax, ymin, ymax = compute_bounds(lon, lat)
     layers = {}
 
-    for op in df_all[OPERATOR_COL].unique():
-        png = build_heatmap_layer(df_all[df_all[OPERATOR_COL] == op], OPERATOR_COLORS.get(op, "#888"), xmin, xmax, ymin, ymax)
+    for op in df_all["carrier"].unique():
+        png = build_heatmap_layer(df_all[df_all["carrier"] == op], OPERATOR_COLORS.get(op, "#888"), xmin, xmax, ymin, ymax)
         layers[op] = png
 
     kmz = create_kmz(layers, xmin, xmax, ymin, ymax)
